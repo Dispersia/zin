@@ -23,6 +23,8 @@ pub fn build(b: *std.Build) void {
             }),
         });
 
+        b.installArtifact(example_exe);
+
         const example_run_cmd = b.addRunArtifact(example_exe);
         example_run_cmd.step.dependOn(b.getInstallStep());
         const example_step = b.step(example_name, b.fmt("Run the {s} example", .{example_name}));

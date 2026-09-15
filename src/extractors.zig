@@ -4,6 +4,9 @@ const Response = @import("response.zig").Response;
 
 const ExtractorKind = enum { json, path, query };
 
+const StructInfo = std.lang.Type.Struct;
+const FieldAttributes = StructInfo.FieldAttributes;
+
 pub fn Json(comptime T: type) type {
     return makeExtractorType(T, .json);
 }
@@ -16,53 +19,53 @@ pub fn Query(comptime T: type) type {
     return makeExtractorType(T, .query);
 }
 
+const kind_field = "__zin_kind";
+
 fn makeExtractorType(comptime Inner: type, comptime kind: ExtractorKind) type {
-    const inner_fields = @typeInfo(Inner).@"struct".fields;
-    const n = inner_fields.len;
+    const info = @typeInfo(Inner).@"struct";
+    const n = info.field_names.len;
     var names: [n + 1][:0]const u8 = undefined;
     var types: [n + 1]type = undefined;
-    var attrs: [n + 1]std.builtin.Type.StructField.Attributes = undefined;
-    for (inner_fields, 0..) |f, i| {
-        names[i] = f.name;
-        types[i] = f.type;
-        attrs[i] = .{
-            .default_value_ptr = f.default_value_ptr,
-            .@"align" = f.alignment,
-            .@"comptime" = f.is_comptime,
-        };
+    var attrs: [n + 1]FieldAttributes = undefined;
+    for (0..n) |i| {
+        names[i] = info.field_names[i];
+        types[i] = info.field_types[i];
+        attrs[i] = info.field_attrs[i];
     }
     const default_kind: ExtractorKind = kind;
-    names[n] = "__zin_kind";
+    names[n] = kind_field;
     types[n] = ExtractorKind;
     attrs[n] = .{ .default_value_ptr = @ptrCast(&default_kind), .@"comptime" = true };
     return @Struct(.auto, null, &names, &types, &attrs);
 }
 
+fn isKindField(comptime name: []const u8) bool {
+    return std.mem.eql(u8, name, kind_field);
+}
+
 fn extractorKind(comptime T: type) ?ExtractorKind {
     if (@typeInfo(T) != .@"struct") return null;
-    inline for (@typeInfo(T).@"struct".fields) |f| {
-        if (comptime std.mem.eql(u8, f.name, "__zin_kind")) {
-            return comptime f.defaultValue().?;
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_attrs) |name, attrs| {
+        if (comptime isKindField(name)) {
+            return comptime attrs.defaultValue(ExtractorKind).?;
         }
     }
     return null;
 }
 
 fn InnerType(comptime T: type) type {
-    const fields = @typeInfo(T).@"struct".fields;
-    var names: [fields.len - 1][:0]const u8 = undefined;
-    var types: [fields.len - 1]type = undefined;
-    var attrs: [fields.len - 1]std.builtin.Type.StructField.Attributes = undefined;
+    const info = @typeInfo(T).@"struct";
+    const n = info.field_names.len - 1;
+    var names: [n][:0]const u8 = undefined;
+    var types: [n]type = undefined;
+    var attrs: [n]FieldAttributes = undefined;
     var j: usize = 0;
-    for (fields) |f| {
-        if (std.mem.eql(u8, f.name, "__zin_kind")) continue;
-        names[j] = f.name;
-        types[j] = f.type;
-        attrs[j] = .{
-            .default_value_ptr = f.default_value_ptr,
-            .@"align" = f.alignment,
-            .@"comptime" = f.is_comptime,
-        };
+    for (info.field_names, info.field_types, info.field_attrs) |name, FieldType, field_attrs| {
+        if (isKindField(name)) continue;
+        names[j] = name;
+        types[j] = FieldType;
+        attrs[j] = field_attrs;
         j += 1;
     }
     return @Struct(.auto, null, &names, &types, &attrs);
@@ -75,17 +78,17 @@ pub fn callHandler(
     req: Request,
 ) Response {
     const H = @TypeOf(handler);
-    const params = @typeInfo(H).@"fn".params;
+    const fn_info = @typeInfo(H).@"fn";
     var args: std.meta.ArgsTuple(H) = undefined;
 
-    inline for (params, 0..) |param, i| {
-        const T = param.type.?;
+    inline for (fn_info.param_types, 0..) |param_type, i| {
+        const T = param_type.?;
         args[i] = extractArg(T, param_names, param_values, req) catch {
             return Response.textWithStatus(.bad_request, "Bad Request");
         };
     }
 
-    const ReturnType = @typeInfo(H).@"fn".return_type.?;
+    const ReturnType = fn_info.return_type.?;
     if (@typeInfo(ReturnType) == .error_union) {
         return @call(.auto, handler, args) catch
             Response.textWithStatus(.internal_server_error, "Internal Server Error");
@@ -130,11 +133,12 @@ fn extractPathParams(
     comptime param_names: []const []const u8,
     param_values: []const []const u8,
 ) !T {
+    const info = @typeInfo(T).@"struct";
     var result: T = undefined;
-    inline for (@typeInfo(T).@"struct".fields) |field| {
-        if (comptime std.mem.eql(u8, field.name, "__zin_kind")) continue;
-        const raw = findParam(param_names, param_values, field.name) orelse return error.BadRequest;
-        @field(result, field.name) = parseValue(field.type, raw) orelse return error.BadRequest;
+    inline for (info.field_names, info.field_types) |name, FieldType| {
+        if (comptime isKindField(name)) continue;
+        const raw = findParam(param_names, param_values, name) orelse return error.BadRequest;
+        @field(result, name) = parseValue(FieldType, raw) orelse return error.BadRequest;
     }
     return result;
 }
@@ -167,24 +171,26 @@ fn extractJson(comptime T: type, body: []const u8) !T {
     const parsed = std.json.parseFromSlice(Inner, std.heap.page_allocator, body, .{
         .ignore_unknown_fields = true,
     }) catch return error.BadRequest;
+    const info = @typeInfo(T).@"struct";
     var result: T = undefined;
-    inline for (@typeInfo(T).@"struct".fields) |field| {
-        if (comptime std.mem.eql(u8, field.name, "__zin_kind")) continue;
-        @field(result, field.name) = @field(parsed.value, field.name);
+    inline for (info.field_names) |name| {
+        if (comptime isKindField(name)) continue;
+        @field(result, name) = @field(parsed.value, name);
     }
     return result;
 }
 
 fn extractQuery(comptime T: type, query_string: ?[]const u8) !T {
     const qs = query_string orelse return error.BadRequest;
+    const info = @typeInfo(T).@"struct";
     var result: T = undefined;
-    inline for (@typeInfo(T).@"struct".fields) |field| {
-        if (comptime std.mem.eql(u8, field.name, "__zin_kind")) continue;
-        const raw = findQueryParam(qs, field.name);
+    inline for (info.field_names, info.field_types, info.field_attrs) |name, FieldType, attrs| {
+        if (comptime isKindField(name)) continue;
+        const raw = findQueryParam(qs, name);
         if (raw) |r| {
-            @field(result, field.name) = parseValue(field.type, r) orelse return error.BadRequest;
-        } else if (field.defaultValue()) |d| {
-            @field(result, field.name) = d;
+            @field(result, name) = parseValue(FieldType, r) orelse return error.BadRequest;
+        } else if (comptime attrs.defaultValue(FieldType)) |d| {
+            @field(result, name) = d;
         } else return error.BadRequest;
     }
     return result;
@@ -205,4 +211,36 @@ test "query param parsing" {
     const v = findQueryParam("name=alice&age=30", "age");
     try std.testing.expectEqualStrings("30", v.?);
     try std.testing.expectEqual(null, findQueryParam("name=alice", "missing"));
+}
+
+test "extractor kinds" {
+    const P = Path(struct { id: u32 });
+    try std.testing.expectEqual(ExtractorKind.path, extractorKind(P).?);
+    const J = Json(struct { name: []const u8 });
+    try std.testing.expectEqual(ExtractorKind.json, extractorKind(J).?);
+    try std.testing.expectEqual(null, extractorKind(struct { x: u8 }));
+}
+
+test "path param extraction" {
+    const P = Path(struct { id: u32, slug: []const u8 });
+    const names = [_][]const u8{ "id", "slug" };
+    const values = [_][]const u8{ "42", "hello" };
+    const p = try extractPathParams(P, &names, &values);
+    try std.testing.expectEqual(@as(u32, 42), p.id);
+    try std.testing.expectEqualStrings("hello", p.slug);
+}
+
+test "query extraction with defaults" {
+    const Q = Query(struct { name: []const u8, limit: u32 = 10 });
+    const q = try extractQuery(Q, "name=alice");
+    try std.testing.expectEqualStrings("alice", q.name);
+    try std.testing.expectEqual(@as(u32, 10), q.limit);
+    try std.testing.expectError(error.BadRequest, extractQuery(Q, "limit=5"));
+}
+
+test "json extraction" {
+    const J = Json(struct { title: []const u8, done: bool });
+    const j = try extractJson(J, "{\"title\":\"x\",\"done\":true,\"extra\":1}");
+    try std.testing.expectEqualStrings("x", j.title);
+    try std.testing.expect(j.done);
 }

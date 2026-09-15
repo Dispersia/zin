@@ -1,30 +1,29 @@
 {
-  description = "Zig 0.16"
+  description = "Zin - Zig HTTP framework";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
     zig-overlay.url = "github:mitchellh/zig-overlay";
-    zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
-
-    zls-flake.url = "github:zigtools/zls";
-    nls-flake.inputs.nixpkgs.follows = "nixpkgs";
-    zls-flake.inputs.zig-overlay.follows = "zig-overlay";
   };
 
-  outputs = { self, nixpkgs, zig-overlay, zls-flake }:
-    let
-      system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system}
+  outputs =
+    { nixpkgs, flake-utils, zig-overlay, ... }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = import nixpkgs { inherit system; };
+        zig = zig-overlay.packages.${system}.master;
+      in
+      {
+        formatter = pkgs.nixfmt-tree;
 
-      zig = zig-overlay.packages.${system}."0.16.0"
-      zls = zls-flake.packages.${system}.zls;
-    in {
-      devShells.${system}.default = pkgs.mkShell {
-        nativeBuildInputs = [
-          zig
-          zls
-        ];
-      };
-    };
+        devShells.default = pkgs.mkShell {
+          packages = [
+            zig
+            pkgs.zls
+          ];
+        };
+      }
+    );
 }

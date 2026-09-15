@@ -56,10 +56,10 @@ pub const Route = struct {
 
 pub fn Router(comptime route_defs: anytype, comptime opts: Options) type {
     const route_info = comptime blk: {
-        const fields = @typeInfo(@TypeOf(route_defs.*)).@"struct".fields;
+        const fields = @typeInfo(@TypeOf(route_defs.*)).@"struct".field_names;
         var routes: [fields.len]CompiledRoute = undefined;
-        for (fields, 0..) |field, i| {
-            const entry = @field(route_defs.*, field.name);
+        for (fields, 0..) |field_name, i| {
+            const entry = @field(route_defs.*, field_name);
             const EntryType = @TypeOf(entry);
             if (@hasDecl(EntryType, "__zin_mount")) {
                 routes[i] = .{
@@ -85,9 +85,9 @@ pub fn Router(comptime route_defs: anytype, comptime opts: Options) type {
                 if (before_fn(req)) |resp| return applyAfter(req, resp);
             }
 
-            const fields = @typeInfo(@TypeOf(route_defs.*)).@"struct".fields;
-            inline for (fields, 0..) |field, i| {
-                const entry = @field(route_defs.*, field.name);
+            const fields = @typeInfo(@TypeOf(route_defs.*)).@"struct".field_names;
+            inline for (fields, 0..) |field_name, i| {
+                const entry = @field(route_defs.*, field_name);
                 const EntryType = @TypeOf(entry);
 
                 if (comptime @hasDecl(EntryType, "__zin_mount")) {
